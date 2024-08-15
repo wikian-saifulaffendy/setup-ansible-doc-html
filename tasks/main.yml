@@ -1,0 +1,99 @@
+---
+# tasks file for setup-ansible-doc-html
+- name: Install require packages for configuration
+  ansible.builtin.yum:
+    name:
+      - ansible # RHEL 9 using ansible-core package
+      - httpd
+      - wget
+    state: present
+    enablerepo:
+      - rhel-7-server-extras-rpms
+      - rhel-7-server-rpms
+
+- name: Start HTTPD web services
+  ansible.builtin.service:
+    name: httpd
+    state: started
+    enabled: true
+
+- name: Ensure HTTPD web server port 80/TCP is accessible
+  ansible.builtin.wait_for:
+    host: "{{ ansible_host }}"
+    port: 80
+    state: started
+    timeout: 30
+
+- name: Ensure firewalld is installed and running
+  ansible.builtin.service:
+    name: firewalld
+    state: started
+    enabled: true
+
+- name: Add firewall rule for HTTPD web server port 80/TCP
+  ansible.posix.firewalld:
+    port: 80/tcp
+    permanent: true
+    state: enabled
+    immediate: true
+
+- name: Check SELinux context for /var/www/ directory
+  ansible.builtin.command:
+    cmd: ls -ldZ /var/www/
+  register: r_selinux_context
+
+- name: Debug SELinux context
+  ansible.builtin.debug:
+    var: r_selinux_context.stdout
+
+- name: Get the current timestamp
+  ansible.builtin.command:
+    cmd: date +%Y%m%d_%H%M%S
+  register: v_backup_timestamp
+
+- name: Create a backup of the existing web contents
+  ansible.builtin.command:
+    cmd: tar -czvf /var/backups/web_backup_{{ v_backup_timestamp.stdout }}.tar.gz /var/www/html/
+  register: v_backup_result
+  failed_when: v_backup_result.rc != 0
+
+- name: Fail if backup was not successful
+  ansible.builtin.fail:
+    msg: "Backup creation failed. Please check the logs for details."
+  when: v_backup_result.failed
+
+- name: Remove existing web contents in /var/www/html/
+  ansible.builtin.file:
+    path: /var/www/html/
+    state: absent
+
+- name: Add a new contents in /var/www/html/ directory
+  ansible.builtin.file:
+    path: /var/www/html/
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Copy ansible-doc-html web content to remote host
+  ansible.builtin.copy:
+    src: files/ansible-doc.tar
+    dest: /tmp/
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Extracting ansible-doc-html archive file
+  ansible.builtin.command:
+    cmd: tar -xvf /tmp/ansible-doc.tar -C /var/www/html/ .
+
+
+- name: Restart the web server to apply changes
+  ansible.builtin.service:
+    name: httpd
+    state: restarted
+
+- name: Delete a temp directory to compile ansible-doc-html
+  ansible.builtin.file:
+    path: /tmp/ansible-doc.tar
+    state: absent
